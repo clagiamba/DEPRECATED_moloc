@@ -8,6 +8,8 @@ Authors@R: c(
 Author: Claudia Giambartolomei [aut, cre],
     Jimmy Liu [aut]
 Maintainer: Claudia Giambartolomei <claudia.giambartolomei@gmail.com>
+URL: http://github.com/clagiamba/moloc
+BugReports: http://github.com/clagiamba/moloc/issues
 Description: This package is an extension of coloc, a Bayesian method to co-
     localize genetic associations with multiple traits at a locus.
 License: 
