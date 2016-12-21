@@ -57,7 +57,7 @@ change_indels <- function(data) {
 #' 
 #' 
 #' 
-#' @author James Boocock, Claudia Giambartolomei
+#' @author Claudia Giambartolomei, James Boocock
 #' @keywords internal
 match_alleles <- function(data, A1.ref="A1.ref", A2.ref="A2.ref",  flip = TRUE) {
    match_correct = data[,A1.ref] == data[,"A1"] & data[,A2.ref]== data[,"A2"]
