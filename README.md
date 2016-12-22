@@ -11,3 +11,8 @@ It uses association summary statistics (beta, SE) across any number of traits/ou
 install.packages("devtools")
 
 devtools::install_github("clagiamba/moloc")
+
+
+## Contributors
+
+Jimmy Liu
