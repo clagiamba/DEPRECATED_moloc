@@ -183,6 +183,7 @@ coloc.eqtl.biom.mqtl <- function(listData, bed, outfolder = "test", prefix = "pr
            if (have_alleles){
                # listRegion2 <- lapply(listRegion2, function(x) sapply(x[,"A1", "A2"], as.character))
                listRegion2 <- lapply(listRegion2, function(df) {df[c("A1", "A2")] <- lapply(df[c("A1", "A2")], as.character); df})
+               listRegion2 <- lapply(listRegion2, function(df) {df[c("A1", "A2")] <- lapply(df[c("A1", "A2")], toupper); df})
                listRegion2 <- lapply(listRegion2, change_indels)
                match_correct2 = (listRegion2[[1]]["A1"] ==listRegion2[[2]]["A1"]) & (listRegion2[[1]]["A2"]== listRegion2[[2]]["A2"])
                match_flip2 = (listRegion2[[1]]["A1"] == listRegion2[[2]]["A2"]) & (listRegion2[[1]]["A2"] == listRegion2[[2]]["A1"])
