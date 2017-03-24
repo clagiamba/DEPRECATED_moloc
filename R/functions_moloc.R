@@ -1,5 +1,27 @@
 #library(mvtnorm)
 
+##' Estimate trait standard deviation given vectors of variance of coefficients,  MAF and sample size
+##'
+##' Estimate is based on var(beta-hat) = var(Y) / (n * var(X))
+##' var(X) = 2*maf*(1-maf)
+##' so we can estimate var(Y) by regressing n*var(X) against 1/var(beta)
+##' 
+##' @title Estimate trait variance, internal function
+##' @param vbeta vector of variance of coefficients
+##' @param maf vector of MAF (same length as vbeta)
+##' @param n sample size
+##' @return estimated standard deviation of Y
+##' 
+##' @author Chris Wallace
+sdY.est <- function(vbeta, maf, n) {
+  oneover <- 1/vbeta
+  nvx <- 2 * n * maf * (1-maf)
+  m <- lm(nvx ~ oneover - 1)
+  if(coef(m)[["oneover"]] < 0)
+    stop("Trying to estimate trait variance from betas, and getting negative estimate.  Something is wrong.  You can 'fix' this by supplying an estimate of trait standard deviation yourself, as sdY=<value> in the dataset list.")
+  return(sqrt(coef(m)[["oneover"]]))
+}
+
 #' variance of MLE of beta for quantitative trait, assuming var(y)=0
 #'
 #' Internal function
@@ -29,6 +51,7 @@ Var.data <- function(f, N) {
 stats_p <- function(p, n, maf) {
     z <- qnorm(0.5 * p, lower.tail = FALSE)
     var_mle <- 1/(2*maf*(1-maf) * ( n + z^2))
+    # var_mle <- 1 / (2 * maf * (1 - maf) * n)
     SE <- sqrt(var_mle)
     BETA = z * SE
     # vars = 2 * maf * ( 1 - maf) * n * SE^2 * (n -1) + 2 * maf * ( 1- maf) * n * BETA^2 
@@ -222,6 +245,11 @@ make_sigma <- function(cor_mat, v, w){
             sigma[j, i] = c * sqrt((v[i] + w[i]) * (v[j] + w[j]))
         }
     }
+    if (!is_pos_def(sigma)) {
+            message("Matrix is not positive definite")
+            sigma <- get_psd(sigma)
+        }
+
     return(sigma)
 }
 
@@ -236,6 +264,7 @@ make_sigma <- function(cor_mat, v, w){
 #'     SE
 #' @param overlap Logical, do the individuals in the datasets overlap?
 #' @param prior_var One or more numbers for the prior variance of the ABF.
+#' @param compute_sdY Estimate standard deviation of Y. If false assume sdY is 1
 #' @return An array containing the log adjusted Bayes Factors for each SNP and
 #'         for each SNP and each configuration combination
 #' @examples
@@ -245,7 +274,7 @@ make_sigma <- function(cor_mat, v, w){
 #' 
 #' @keywords internal
 #' @author Jimmy Liu, Claudia Giambartolomei
-adjust_bfs <- function(listData, overlap=FALSE, prior_var=0.15, from_p=FALSE){
+adjust_bfs <- function(listData, overlap=FALSE, prior_var=0.15, compute_sdY = FALSE, from_p=FALSE){
   # keep only common SNPs in all data: 
   listData <- lapply(listData, function(x) x[x$SNP %in% Reduce(intersect, Map("[[", listData, "SNP")), ])
   if (nrow(listData[[1]])==0) stop("There are no common SNPs in the datasets: check that SNP names are consistent")       
@@ -290,45 +319,63 @@ adjust_bfs <- function(listData, overlap=FALSE, prior_var=0.15, from_p=FALSE){
     snps <- as.character(listData[[1]]$SNP)
     ABF <- array(,dim=c(length(snps),1,length(configs)))
     dimnames(ABF) <- list(snps,NULL,configs) 
-    # ABF["rs6495304",,"a"]
+    # grid of priors?
+    # grid_priors <- matrix(0, nrow(configs_cases), ncol(configs_cases))
+    if (compute_sdY) {
+        sdY = mapply(sdY.est, lapply(lapply(listData, "[[", "SE"), '^',2), lapply(listData, "[[", "MAF"),  lapply(listData, "[[", "N"), SIMPLIFY = FALSE)
+        varY = lapply(sdY, '^',2)
+        names(varY) = d
+        varY_configs <- apply(configs_cases, 1, function(x) prod(unlist(varY[unlist(x)])) )
+    }
 
-    for (s in 1:length(snps)) {
-          # values across each of the files
-          v <- as.numeric(unlist(lapply(listData, function(x) x$SE[x$SNP == snps[s]])))^2
-          if (length(v)!=n_files) stop("SNP not found in one of the datasets")
-          betas <- as.numeric(unlist(lapply(listData, function(x) x$BETA[x$SNP == snps[s]])))
-          if (length(betas)!=n_files) stop("SNP not found in one of the datasets")
-          means <- rep(0, n_files)
-          w_0 <- rep(0, n_files)
-          sigma_h0 <- make_sigma(cor_mat, v, w_0)
-          # for each combination of c, create a w with length is number of traits and filled with 0.1 for the particular trait combinaton
+    names(listData) <- d
+    var = lapply(listData, "[[", "SE")
+    var = lapply(var, '^',2)
+    var = do.call(cbind, var)
 
-             for (i in 1:nrow(configs_cases)) {
+    betas = lapply(listData, "[[", "BETA")
+    betas = do.call(cbind, betas)
+
+    # data_sets <- apply(configs_cases,1, function(x) do.call(cbind.data.frame, listData[unlist(x[x!=''])]))
+    means <- rep(0, n_files)
+    w_0 <- rep(0, n_files)
+    sigma_h0 <- lapply(split(var, seq(NROW(var))), FUN=make_sigma, cor_mat=cor_mat, w=w_0)
+
+    pdf_null <- c()
+    for (j in 1:length(sigma_h0)) {
+         x <- dmvnorm(betas[j,], means, sigma_h0[[j]])
+         pdf_null <- c(pdf_null, x)
+    }
+
+    for (i in 1:nrow(configs_cases)) {
                config <- configs[i]
-               adj_i_average <- numeric()
-
+               adj_i_average <- data.frame(matrix(ncol=0,nrow=length(snps)),stringsAsFactors=FALSE)
                for (w_i in prior_var) {
-               w <- as.numeric(ifelse(nchar(as.matrix(configs_cases[i,])), w_i, 0))
-               sigma_h1 <- make_sigma(cor_mat, v, w)
-               if (!is_pos_def(sigma_h1)) {
-                message("SNP ", snps[s], " does not have a positive definite")
-                sigma_h1 <- get_psd(sigma_h1)
-               }
-            pdf_alt <- dmvnorm(betas, means, sigma_h1)
-            pdf_null <- dmvnorm(betas, means, sigma_h0)
-            if (pdf_null ==0 | pdf_null<1e-300) {
-               adj_bf <- 1.0
-               } else {
-               adj_bf <- pdf_alt / pdf_null
-            }
-            adj_i_average <- c(adj_i_average, adj_bf)
-          }
-          adj_bf <- sum(adj_i_average)/length(adj_i_average)
-               if (log(adj_bf) == "Inf"| log(adj_bf) == "-Inf") stop("Division impossible for adj_bf")
+                  w <- as.numeric(ifelse(nchar(as.matrix(configs_cases[i,])), w_i, 0))
+                  if (compute_sdY) {
+                      w <- w * varY_configs[i]
+                  }
 
-          ABF[s,1,config] <- log(adj_bf)
+                  sigma_h1 <- lapply(split(var, seq(NROW(var))), FUN=make_sigma, cor_mat=cor_mat, w=w)
+                  pdf_alt <- c()
+                  for (j in 1:length(sigma_h0)) {
+                      x <- dmvnorm(betas[j,], means, sigma_h1[[j]])
+                      pdf_alt <- c(pdf_alt, x)
+                  }
+                  adj_bf <- pdf_alt / pdf_null
+
+                  adj_bf <- mapply(function(x, y)
+                          if (y ==0 | y<1e-300) res <- 1.0 else res <- x / y, 
+                          pdf_alt, pdf_null)
+
+                  adj_i_average<- cbind(adj_i_average, adj_bf)
+               }  
+               adj_bf <- apply(adj_i_average, 1, mean)
+
+               if (any(log(adj_bf)== "Inf") | any(log(adj_bf)== "-Inf") ) stop("Division impossible for adj_bf")
+
+          ABF[,1,config] <- log(adj_bf)
           }
-         }
     return(ABF)
     }
 
@@ -485,6 +532,7 @@ snp_ppa <- function(ABF, n_files, config_ppas){
 #' @param overlap Logical, do the individuals in the datasets overlap?
 #' @param prior_var One or more numbers for the prior variance of the ABF.
 #' @param priors are numbers, the prior for one variant to be associated with 1 trait and with each additional trait
+#' @param compute_sdY Estimate standard deviation of Y. If false assume sdY is 1
 #' 
 #' @param ... parameters passed to \code{\link{adjust_bfs}}, \code{\link{config_coloc}}, \code{\link{snp_ppa}}
 #' @return A list of three elements: 
@@ -500,7 +548,7 @@ snp_ppa <- function(ABF, n_files, config_ppas){
 #' moloc <- moloc_test(listData) # uses default priors
 #' 
 #' @author Claudia Giambartolomei
-moloc_test <- function(listData, overlap=FALSE, prior_var=c(0.01, 0.1, 0.5), priors=c(1e-04, 1e-06, 1e-07), from_p=FALSE) {
+moloc_test <- function(listData, overlap=FALSE, prior_var=c(0.01, 0.1, 0.5), priors=c(1e-04, 1e-06, 1e-07), compute_sdY=FALSE, from_p=FALSE) {
     n_files <- length(listData)
     if(missing(priors)) {
       priors <- 10^-(seq(from=4, to=4+n_files-1, by=1))
