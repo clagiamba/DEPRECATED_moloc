@@ -226,7 +226,6 @@ get_combos <- function(x) {
   unique(grep('.*([^,]).*\\1', x4, val=TRUE, invert=TRUE))
 }
 
-
 #' Internal function, make_sigma
 #'
 #' This function creates Wakefield's ABF for each SNP, taking account of the correlation between traits
@@ -245,14 +244,8 @@ make_sigma <- function(cor_mat, v, w){
             sigma[j, i] = c * sqrt((v[i] + w[i]) * (v[j] + w[j]))
         }
     }
-    if (!is_pos_def(sigma)) {
-            message("Matrix is not positive definite")
-            sigma <- get_psd(sigma)
-        }
-
     return(sigma)
 }
-
 
 #' Adjusted Bayes factors for each SNP and each single association and combinations of
 #' sharing/not sharing of causal variants across the datasets in the input data
@@ -274,7 +267,7 @@ make_sigma <- function(cor_mat, v, w){
 #' 
 #' @keywords internal
 #' @author Jimmy Liu, Claudia Giambartolomei
-adjust_bfs <- function(listData, overlap=FALSE, prior_var=0.15, compute_sdY = FALSE, from_p=FALSE){
+adjust_bfs <- function(listData, prior_var=0.15^2, overlap = FALSE, compute_sdY = FALSE, from_p=FALSE){
   # keep only common SNPs in all data: 
   listData <- lapply(listData, function(x) x[x$SNP %in% Reduce(intersect, Map("[[", listData, "SNP")), ])
   if (nrow(listData[[1]])==0) stop("There are no common SNPs in the datasets: check that SNP names are consistent")       
@@ -286,12 +279,15 @@ adjust_bfs <- function(listData, overlap=FALSE, prior_var=0.15, compute_sdY = FA
          return(y)
          })    # if (!all(c("BETA", "SE") %in% names(x)))
   }       
+  
   #######
   n_files <- length(listData)
   d <- letters[1:n_files]
   configs_cases <- do.call(expand.grid, lapply(d, function(x) c("", x)))[-1,]
   configs <- do.call(paste0, configs_cases)
-
+  d_coloc <- configs[nchar(configs)>1]
+  # coloc_cases <- configs_cases[apply(nchar(as.matrix(configs_cases)), 1, sum)>1,]
+   
     # adjusted bfs
     # correlation matrix
     # if assuming no overlap, cor_mat is identity matrix
@@ -322,12 +318,14 @@ adjust_bfs <- function(listData, overlap=FALSE, prior_var=0.15, compute_sdY = FA
     # grid of priors?
     # grid_priors <- matrix(0, nrow(configs_cases), ncol(configs_cases))
     if (compute_sdY) {
+        if (!all(unlist(lapply (listData, function(x) c("MAF") %in% names(x) ) ))) stop("Must provide a column MAF")
         sdY = mapply(sdY.est, lapply(lapply(listData, "[[", "SE"), '^',2), lapply(listData, "[[", "MAF"),  lapply(listData, "[[", "N"), SIMPLIFY = FALSE)
         varY = lapply(sdY, '^',2)
         names(varY) = d
-        varY_configs <- apply(configs_cases, 1, function(x) prod(unlist(varY[unlist(x)])) )
+        # varY_configs <- apply(configs_cases, 1, function(x) prod(unlist(varY[unlist(x)])) )
     }
 
+    # create data frames of betas and var across all traits
     names(listData) <- d
     var = lapply(listData, "[[", "SE")
     var = lapply(var, '^',2)
@@ -347,13 +345,15 @@ adjust_bfs <- function(listData, overlap=FALSE, prior_var=0.15, compute_sdY = FA
          pdf_null <- c(pdf_null, x)
     }
 
-    for (i in 1:nrow(configs_cases)) {
-               config <- configs[i]
+    for (i in 1:length(d)) {
+               config = d[i]
                adj_i_average <- data.frame(matrix(ncol=0,nrow=length(snps)),stringsAsFactors=FALSE)
                for (w_i in prior_var) {
-                  w <- as.numeric(ifelse(nchar(as.matrix(configs_cases[i,])), w_i, 0))
+                  # This needs to be in the correct order for each trait
+                  w <- ifelse(d %in% as.matrix(config), w_i, 0)
+                  # w <- as.numeric(ifelse(nchar(as.matrix(configs_cases[i,])), w_i, 0))
                   if (compute_sdY) {
-                      w <- w * varY_configs[i]
+                      w <- w * varY[[config]]
                   }
 
                   sigma_h1 <- lapply(split(var, seq(NROW(var))), FUN=make_sigma, cor_mat=cor_mat, w=w)
@@ -376,8 +376,15 @@ adjust_bfs <- function(listData, overlap=FALSE, prior_var=0.15, compute_sdY = FA
 
           ABF[,1,config] <- log(adj_bf)
           }
+          
+    for (i in 1:length(d_coloc)) {
+               config <- d_coloc[i]
+          ABF[,1,config] <- apply(ABF[,,unlist(strsplit(config, split=""))], 1, FUN=sum)
+          }
     return(ABF)
     }
+    
+
 
 #' Likelihood frame and posterior probability for combinations of sharing/not sharing
 #' of causal variants across the datasets in the input data
@@ -558,7 +565,7 @@ moloc_test <- function(listData, overlap=FALSE, prior_var=c(0.01, 0.1, 0.5), pri
       priors <- as.numeric(priors)
     }
 
-    ABF <- adjust_bfs(listData, overlap, prior_var, from_p)
+    ABF <- adjust_bfs(listData=listData, overlap=overlap, prior_var=prior_var, compute_sdY=compute_sdY, from_p=from_p)
     lkl <- config_coloc(ABF, n_files, priors)
     snp <- snp_ppa(ABF, n_files=n_files, config_ppas=lkl[[1]])
     nsnps <- lkl[[2]]
